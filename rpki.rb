@@ -4,23 +4,37 @@ require 'ipaddr'
 require 'socket'
 require 'time'
 
+require 'serverengine'
+
 module RPKI
   class RouterProtocol
-    def initialize host
+    POLLINTERVAL = 1800      # 30min
+
+    def initialize host, logger
       @host = host
       @session_id = 0
       @last_serial = 0
       #@list = PrefixList.new
+      @sock = nil
+
+      @logger = logger
+    end
+
+    def close
+      @sock.close if @sock
     end
 
     def connect
       f = File.open("log", "w")
       TCPSocket.open(@host, 323) { |sock|
+        @sock = sock
+
+        @logger.info "Reset Query"
         sock.write ResetQueryPDU.new.to_bytes
 
         bytes = ""
         while true
-          a = IO.select([sock], [], [], 10)
+          a = IO.select([sock], [], [], POLLINTERVAL)
 
           if a
             bytes += sock.recv(1024)
@@ -36,24 +50,25 @@ module RPKI
                 # "1111:2222:3333::".size = 16
                 f.printf "%s %-20s %3u - %3u  as%u\n", flag, pdu.prefix.to_s, pdu.prefixlen, pdu.maxlen, pdu.asn
               elsif pdu.is_a? CacheResponsePDU
-                puts "Cache Response at #{timestamp}"
+                @logger.info "Cache Response"
                 @session_id = pdu.session_id
               elsif pdu.is_a? EndOfDataPDU
-                puts "End of Data at #{timestamp}"
+                @logger.info "End of Data"
                 @last_serial = pdu.serial
               else
-                puts "Unexpected #{pdu.class.to_s}: at #{Time.now.iso8601}"
+                @logger.error "Unexpected #{pdu.class.to_s}"
               end
 
               bytes = bytes[pdu.length..-1]
             end
           else
             # timeout
-            puts "timeout"
+            @logger.info "send Serual Query #{@last_serial}"
             sock.send SerialQueryPDU.new(@session_id, @last_serial).to_bytes, 0
           end
         end
       }
+      @sock = nil
     end
 
     class PDU
@@ -162,7 +177,26 @@ module RPKI
   end
 end
 
+module RPKI
+  module Daemon
+    def run
+      logger.info "run"
+      @rpki = RPKI::RouterProtocol.new "roa1.mfeed.ad.jp", logger
+      #rpki = RPKI::RouterProtocol.new "192.41.192.218", logger
+      @rpki.connect
+      logger.info "done"
+    end
 
-rpki = RPKI::RouterProtocol.new "roa1.mfeed.ad.jp"
-#rpki = RPKI::RouterProtocol.new "192.41.192.218"
-rpki.connect
+    def stop
+      logger.info "stop"
+      @rpki.close
+    end
+  end
+end
+
+se = ServerEngine.create(nil, RPKI::Daemon, {
+  :daemonize => true,
+  :log => 'myserver.log',
+  :pid_path => 'myserver.pid',
+})
+se.run
