@@ -49,6 +49,9 @@ module RPKI
                 end
                 # "1111:2222:3333::".size = 16
                 f.printf "%s %-20s %3u - %3u  as%u\n", flag, pdu.prefix.to_s, pdu.prefixlen, pdu.maxlen, pdu.asn
+              elsif pdu.is_a? SerialNotifyPDU
+                @logger.info "Serial Notify: #{pdu.serial}"
+                self.query
               elsif pdu.is_a? CacheResponsePDU
                 @logger.info "Cache Response"
                 @session_id = pdu.session_id
@@ -63,12 +66,16 @@ module RPKI
             end
           else
             # timeout
-            @logger.info "send Serual Query #{@last_serial}"
-            sock.send SerialQueryPDU.new(@session_id, @last_serial).to_bytes, 0
+            self.query
           end
         end
       }
       @sock = nil
+    end
+
+    def query
+      @logger.info "send Serial Query: #{@last_serial}"
+      sock.send SerialQueryPDU.new(@session_id, @last_serial).to_bytes, 0
     end
 
     class PDU
